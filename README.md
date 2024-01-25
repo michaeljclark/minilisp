@@ -23,19 +23,36 @@ how all these features work.
 Compile
 -------
 
-    $ make
+### Building on Linux
 
-MiniLisp has been tested on Linux x86/x86-64 and 64 bit Mac OS. The code is not
-very architecture dependent, so you should be able to compile and run on other
-Unix-like operating systems.
+```
+cmake -B build_linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build_linux
+```
+
+### Building on Windows
+
+```
+cmake -B build_win32 -G "Visual Studio 17 2022" -A x64
+cmake --build build_win32 --config RelWithDebInfo
+```
 
 Test
 ----
 
-MiniLisp comes with a comprehensive test suite. In order to run the tests, give
-"test" argument to make.
+MiniLisp has been tested on Linux x86/x86-64, Windows/x64 and 64-bit macOS.
+The code is not very architecture dependent, so you should be able to compile
+and run on other Unix-like operating systems. The libedit REPL has been tested
+on Linux and Windows but should compile on BSD and macOS with minor changes.
 
-    $ make test
+### Testing on Linux
+
+MiniLisp comes with a comprehensive test suite. In order to run the tests
+execute the test target.
+
+```
+cmake --build build_linux --target test
+```
 
 Language features
 -----------------

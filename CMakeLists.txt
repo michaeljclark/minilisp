@@ -13,5 +13,8 @@ add_executable(minilisp minilisp.c)
 add_library(libml minilisp.c)
 target_compile_definitions(libml PRIVATE -DLIBRARY)
 
+add_executable(ml repl.c)
+target_link_libraries(ml libml ${edit_libs})
+
 enable_testing()
 add_test(minilisp-test "${PROJECT_SOURCE_DIR}/test.sh" WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})

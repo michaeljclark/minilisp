@@ -18,6 +18,7 @@
 // Constants
 Obj *True = &(Obj){ TTRUE };
 Obj *Nil = &(Obj){ TNIL };
+Obj *Err = &(Obj){ TERROR };
 Obj *Dot = &(Obj){ TDOT };
 Obj *Cparen = &(Obj){ TCPAREN };
 
@@ -402,14 +403,16 @@ static Obj *read_list(void *root) {
     *head = Nil;
     for (;;) {
         *obj = read_expr(root);
-        if (!*obj)
-            error("Unclosed parenthesis");
+        if (!*obj) {
+            return warning("Unclosed parenthesis");
+        }
         if (*obj == Cparen)
             return reverse(*head);
         if (*obj == Dot) {
             *last = read_expr(root);
-            if (read_expr(root) != Cparen)
-                error("Closed parenthesis expected after dot");
+            if (read_expr(root) != Cparen) {
+                return warning("Closed parenthesis expected after dot");
+            }
             Obj *ret = reverse(*head);
             (*head)->cdr = *last;
             return ret;
@@ -487,7 +490,12 @@ Obj *read_expr(void *root) {
             return make_int(root, -read_number(0));
         if (isalpha(c) || strchr(symbol_chars, c))
             return read_symbol(root, c);
-        error("Don't know how to handle %c", c);
+        if(c == '\004')
+            return 0;
+        if (c < 32)
+            return warning("Don't know how to handle \\x%02x", c);
+        else
+            return warning("Don't know how to handle '%c'", c);
     }
 }
 
@@ -521,6 +529,7 @@ void print(Obj *obj) {
     CASE(TFUNCTION, "<function>");
     CASE(TMACRO, "<macro>");
     CASE(TMOVED, "<moved>");
+    CASE(TERROR, "<error>");
     CASE(TTRUE, "t");
     CASE(TNIL, "()");
 #undef CASE
@@ -645,10 +654,13 @@ Obj *read_eval_expr(void *root, Obj **env, Obj **expr)
         return 0;
     }
     else if (*expr == Cparen) {
-        error("Stray close parenthesis");
+        return warning("Stray close parenthesis");
     }
     else if (*expr == Dot) {
-        error("Stray dot");
+        return warning("Stray dot");
+    }
+    else if (*expr == Err) {
+        return *expr;
     }
     else {
         return eval_expr(root, env, expr);
@@ -663,13 +675,15 @@ Obj *eval_expr(void *root, Obj **env, Obj **obj) {
     case TFUNCTION:
     case TTRUE:
     case TNIL:
+    case TERROR:
         // Self-evaluating objects
         return *obj;
     case TSYMBOL: {
         // Variable
         Obj *bind = find(env, *obj);
-        if (!bind)
-            error("Undefined symbol: %s", (*obj)->name);
+        if (!bind) {
+            return warning("Undefined symbol: %s", (*obj)->name);
+        }
         return bind->cdr;
     }
     case TCELL: {
@@ -681,12 +695,13 @@ Obj *eval_expr(void *root, Obj **env, Obj **obj) {
         *fn = (*obj)->car;
         *fn = eval_expr(root, env, fn);
         *args = (*obj)->cdr;
-        if ((*fn)->type != TPRIMITIVE && (*fn)->type != TFUNCTION)
-            error("The head of a list must be a function");
+        if ((*fn)->type != TPRIMITIVE && (*fn)->type != TFUNCTION) {
+            return warning("The head of a list must be a function");
+        }
         return apply(root, env, fn, args);
     }
     default:
-        error("Bug: eval_expr: Unknown tag type: %d", (*obj)->type);
+        return warning("Bug: eval_expr: Unknown tag type: %d", (*obj)->type);
     }
 }
 
@@ -696,15 +711,17 @@ Obj *eval_expr(void *root, Obj **env, Obj **obj) {
 
 // 'expr
 static Obj *prim_quote(void *root, Obj **env, Obj **list) {
-    if (length(*list) != 1)
-        error("Malformed quote");
+    if (length(*list) != 1) {
+        return warning("Malformed quote");
+    }
     return (*list)->car;
 }
 
 // (cons expr expr)
 static Obj *prim_cons(void *root, Obj **env, Obj **list) {
-    if (length(*list) != 2)
-        error("Malformed cons");
+    if (length(*list) != 2) {
+        return warning("Malformed cons");
+    }
     Obj *cell = eval_list(root, env, list);
     cell->cdr = cell->cdr->car;
     return cell;
@@ -713,27 +730,31 @@ static Obj *prim_cons(void *root, Obj **env, Obj **list) {
 // (car <cell>)
 static Obj *prim_car(void *root, Obj **env, Obj **list) {
     Obj *args = eval_list(root, env, list);
-    if (args->car->type != TCELL || args->cdr != Nil)
-        error("Malformed car");
+    if (args->car->type != TCELL || args->cdr != Nil) {
+        return warning("Malformed car");
+    }
     return args->car->car;
 }
 
 // (cdr <cell>)
 static Obj *prim_cdr(void *root, Obj **env, Obj **list) {
     Obj *args = eval_list(root, env, list);
-    if (args->car->type != TCELL || args->cdr != Nil)
-        error("Malformed cdr");
+    if (args->car->type != TCELL || args->cdr != Nil) {
+        return warning("Malformed cdr");
+    }
     return args->car->cdr;
 }
 
 // (setq <symbol> expr)
 static Obj *prim_setq(void *root, Obj **env, Obj **list) {
-    if (length(*list) != 2 || (*list)->car->type != TSYMBOL)
-        error("Malformed setq");
+    if (length(*list) != 2 || (*list)->car->type != TSYMBOL) {
+        return warning("Malformed setq");
+    }
     DEFINE2(bind, value);
     *bind = find(env, (*list)->car);
-    if (!*bind)
-        error("Unbound variable %s", (*list)->car->name);
+    if (!*bind) {
+        return warning("Unbound variable %s", (*list)->car->name);
+    }
     *value = (*list)->cdr->car;
     *value = eval_expr(root, env, value);
     (*bind)->cdr = *value;
@@ -744,16 +765,18 @@ static Obj *prim_setq(void *root, Obj **env, Obj **list) {
 static Obj *prim_setcar(void *root, Obj **env, Obj **list) {
     DEFINE1(args);
     *args = eval_list(root, env, list);
-    if (length(*args) != 2 || (*args)->car->type != TCELL)
-        error("Malformed setcar");
+    if (length(*args) != 2 || (*args)->car->type != TCELL) {
+        return warning("Malformed setcar");
+    }
     (*args)->car->car = (*args)->cdr->car;
     return (*args)->car;
 }
 
 // (while cond expr ...)
 static Obj *prim_while(void *root, Obj **env, Obj **list) {
-    if (length(*list) < 2)
-        error("Malformed while");
+    if (length(*list) < 2) {
+        return warning("Malformed while");
+    }
     DEFINE2(cond, exprs);
     *cond = (*list)->car;
     while (eval_expr(root, env, cond) != Nil) {
@@ -775,8 +798,9 @@ static Obj *prim_gensym(void *root, Obj **env, Obj **list) {
 static Obj *prim_plus(void *root, Obj **env, Obj **list) {
     int sum = 0;
     for (Obj *args = eval_list(root, env, list); args != Nil; args = args->cdr) {
-        if (args->car->type != TINT)
-            error("+ takes only numbers");
+        if (args->car->type != TINT) {
+            return warning("+ takes only numbers");
+        }
         sum += args->car->value;
     }
     return make_int(root, sum);
@@ -786,8 +810,9 @@ static Obj *prim_plus(void *root, Obj **env, Obj **list) {
 static Obj *prim_minus(void *root, Obj **env, Obj **list) {
     Obj *args = eval_list(root, env, list);
     for (Obj *p = args; p != Nil; p = p->cdr)
-        if (p->car->type != TINT)
-            error("- takes only numbers");
+        if (p->car->type != TINT) {
+            return warning("- takes only numbers");
+        }
     if (args->cdr == Nil)
         return make_int(root, -args->car->value);
     int r = args->car->value;
@@ -799,12 +824,14 @@ static Obj *prim_minus(void *root, Obj **env, Obj **list) {
 // (< <integer> <integer>)
 static Obj *prim_lt(void *root, Obj **env, Obj **list) {
     Obj *args = eval_list(root, env, list);
-    if (length(args) != 2)
-        error("malformed <");
+    if (length(args) != 2) {
+        return warning("malformed <");
+    }
     Obj *x = args->car;
     Obj *y = args->cdr->car;
-    if (x->type != TINT || y->type != TINT)
-        error("< takes only numbers");
+    if (x->type != TINT || y->type != TINT) {
+        return warning("< takes only numbers");
+    }
     return x->value < y->value ? True : Nil;
 }
 
@@ -986,6 +1013,8 @@ int main(int argc, char **argv) {
         Obj* result= read_eval_expr(root, env, expr);
         if (!result)
             return 0;
+        if (result == Err)
+            exit(1);
         print(result);
         printf("\n");
     }

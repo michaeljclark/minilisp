@@ -18,6 +18,7 @@ enum {
     // can be found at the forwarding pointer. Only the functions to do garbage collection set and
     // handle the object of this type. Other functions will never see the object of this type.
     TMOVED,
+    TERROR,
     // Const objects. They are statically allocated and will never be managed by GC.
     TTRUE,
     TNIL,
@@ -74,6 +75,7 @@ typedef struct Obj {
 // Constants
 extern Obj *True;
 extern Obj *Nil;
+extern Obj *Err;
 extern Obj *Dot;
 extern Obj *Cparen;
 extern Obj *Symbols;
@@ -89,6 +91,15 @@ static _Noreturn void error(char *fmt, ...) {
     fprintf(stderr, "\n");
     va_end(ap);
     exit(1);
+}
+
+static Obj* warning(char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+    return Err;
 }
 
 //======================================================================

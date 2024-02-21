@@ -11,7 +11,11 @@
 #include <string.h>
 #include <stdnoreturn.h>
 
+#ifdef WIN32
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 
 #include "minilisp.h"
 
@@ -150,9 +154,9 @@ static Obj *alloc(void *root, int type, size_t length) {
         error("Memory exhausted");
 
     // Allocate the object.
-    Obj *obj = memory + mem_nused;
+    Obj *obj = (Obj*)((char*)memory + mem_nused);
     obj->type = type;
-    obj->length = length;
+    obj->length = (int)length;
     mem_nused += size;
     return obj;
 }
@@ -197,7 +201,19 @@ static inline Obj *forward(Obj *obj) {
 }
 
 static void *alloc_semispace() {
+#ifdef WIN32
+    return VirtualAlloc(NULL, MEMORY_SIZE, MEM_COMMIT, PAGE_READWRITE);
+#else
     return mmap(NULL, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+#endif
+}
+
+static void dealloc_semispace(void *space) {
+#ifdef WIN32
+    VirtualFree(space, 0, MEM_RELEASE);
+#else
+    munmap(space, MEMORY_SIZE);
+#endif
 }
 
 // Copies the root objects.
@@ -256,7 +272,7 @@ static void gc(void *root) {
     }
 
     // Finish up GC.
-    munmap(from_space, MEMORY_SIZE);
+    dealloc_semispace(from_space);
     size_t old_nused = mem_nused;
     mem_nused = (size_t)((uint8_t *)scan1 - (uint8_t *)memory);
     if (debug_gc)

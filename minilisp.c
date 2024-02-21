@@ -9,97 +9,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdnoreturn.h>
+
 #include <sys/mman.h>
 
-static __attribute((noreturn)) void error(char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
-    va_end(ap);
-    exit(1);
-}
-
-//======================================================================
-// Lisp objects
-//======================================================================
-
-// The Lisp object type
-enum {
-    // Regular objects visible from the user
-    TINT = 1,
-    TCELL,
-    TSYMBOL,
-    TPRIMITIVE,
-    TFUNCTION,
-    TMACRO,
-    TENV,
-    // The marker that indicates the object has been moved to other location by GC. The new location
-    // can be found at the forwarding pointer. Only the functions to do garbage collection set and
-    // handle the object of this type. Other functions will never see the object of this type.
-    TMOVED,
-    // Const objects. They are statically allocated and will never be managed by GC.
-    TTRUE,
-    TNIL,
-    TDOT,
-    TCPAREN,
-};
-
-// Typedef for the primitive function
-struct Obj;
-typedef struct Obj *Primitive(void *root, struct Obj **env, struct Obj **args);
-
-// The object type
-typedef struct Obj {
-    // The first word of the object represents the type of the object. Any code that handles object
-    // needs to check its type first, then access the following union members.
-    int type;
-
-    // The unaligned length of the object excluding "type" and "length" is stored to support
-    // opaque octet strings that include '\0'. The total size of the object, including the
-    // "type" and "length" field, this field, and the padding at the end of the object is
-    // calculated using the obj_size function.
-    int length;
-
-    // Object values.
-    union {
-        // Int
-        int value;
-        // Cell
-        struct {
-            struct Obj *car;
-            struct Obj *cdr;
-        };
-        // Symbol
-        char name[1];
-        // Primitive
-        Primitive *fn;
-        // Function or Macro
-        struct {
-            struct Obj *params;
-            struct Obj *body;
-            struct Obj *env;
-        };
-        // Environment frame. This is a linked list of association lists
-        // containing the mapping from symbols to their value.
-        struct {
-            struct Obj *vars;
-            struct Obj *up;
-        };
-        // Forwarding pointer
-        void *moved;
-    };
-} Obj;
+#include "minilisp.h"
 
 // Constants
-static Obj *True = &(Obj){ TTRUE };
-static Obj *Nil = &(Obj){ TNIL };
-static Obj *Dot = &(Obj){ TDOT };
-static Obj *Cparen = &(Obj){ TCPAREN };
+Obj *True = &(Obj){ TTRUE };
+Obj *Nil = &(Obj){ TNIL };
+Obj *Dot = &(Obj){ TDOT };
+Obj *Cparen = &(Obj){ TCPAREN };
 
 // The list containing all symbols. Such data structure is traditionally called the "obarray", but I
 // avoid using it as a variable name as this is not an array but a list.
-static Obj *Symbols;
+Obj *Symbols;
 
 //======================================================================
 // Memory management
@@ -568,7 +492,7 @@ Obj *read_expr(void *root) {
 }
 
 // Prints the given object.
-static void print(Obj *obj) {
+void print(Obj *obj) {
     switch (obj->type) {
     case TCELL:
         printf("(");
@@ -617,8 +541,6 @@ static int length(Obj *list) {
 // Evaluator
 //======================================================================
 
-static Obj *eval(void *root, Obj **env, Obj **obj);
-
 static void add_variable(void *root, Obj **env, Obj **sym, Obj **val) {
     DEFINE2(vars, tmp);
     *vars = (*env)->vars;
@@ -647,7 +569,7 @@ static Obj *progn(void *root, Obj **env, Obj **list) {
     DEFINE2(lp, r);
     for (*lp = *list; *lp != Nil; *lp = (*lp)->cdr) {
         *r = (*lp)->car;
-        *r = eval(root, env, r);
+        *r = eval_expr(root, env, r);
     }
     return *r;
 }
@@ -658,7 +580,7 @@ static Obj *eval_list(void *root, Obj **env, Obj **list) {
     *head = Nil;
     for (lp = list; *lp != Nil; *lp = (*lp)->cdr) {
         *expr = (*lp)->car;
-        *result = eval(root, env, expr);
+        *result = eval_expr(root, env, expr);
         *head = cons(root, result, head);
     }
     return reverse(*head);
@@ -716,8 +638,25 @@ static Obj *macroexpand(void *root, Obj **env, Obj **obj) {
     return apply_func(root, env, macro, args);
 }
 
+Obj *read_eval_expr(void *root, Obj **env, Obj **expr)
+{
+    *expr = read_expr(root);
+    if (!*expr) {
+        return 0;
+    }
+    else if (*expr == Cparen) {
+        error("Stray close parenthesis");
+    }
+    else if (*expr == Dot) {
+        error("Stray dot");
+    }
+    else {
+        return eval_expr(root, env, expr);
+    }
+}
+
 // Evaluates the S expression.
-static Obj *eval(void *root, Obj **env, Obj **obj) {
+Obj *eval_expr(void *root, Obj **env, Obj **obj) {
     switch ((*obj)->type) {
     case TINT:
     case TPRIMITIVE:
@@ -738,16 +677,16 @@ static Obj *eval(void *root, Obj **env, Obj **obj) {
         DEFINE3(fn, expanded, args);
         *expanded = macroexpand(root, env, obj);
         if (*expanded != *obj)
-            return eval(root, env, expanded);
+            return eval_expr(root, env, expanded);
         *fn = (*obj)->car;
-        *fn = eval(root, env, fn);
+        *fn = eval_expr(root, env, fn);
         *args = (*obj)->cdr;
         if ((*fn)->type != TPRIMITIVE && (*fn)->type != TFUNCTION)
             error("The head of a list must be a function");
         return apply(root, env, fn, args);
     }
     default:
-        error("Bug: eval: Unknown tag type: %d", (*obj)->type);
+        error("Bug: eval_expr: Unknown tag type: %d", (*obj)->type);
     }
 }
 
@@ -796,7 +735,7 @@ static Obj *prim_setq(void *root, Obj **env, Obj **list) {
     if (!*bind)
         error("Unbound variable %s", (*list)->car->name);
     *value = (*list)->cdr->car;
-    *value = eval(root, env, value);
+    *value = eval_expr(root, env, value);
     (*bind)->cdr = *value;
     return *value;
 }
@@ -817,7 +756,7 @@ static Obj *prim_while(void *root, Obj **env, Obj **list) {
         error("Malformed while");
     DEFINE2(cond, exprs);
     *cond = (*list)->car;
-    while (eval(root, env, cond) != Nil) {
+    while (eval_expr(root, env, cond) != Nil) {
         *exprs = (*list)->cdr;
         eval_list(root, env, exprs);
     }
@@ -912,7 +851,7 @@ static Obj *prim_define(void *root, Obj **env, Obj **list) {
     DEFINE2(sym, value);
     *sym = (*list)->car;
     *value = (*list)->cdr->car;
-    *value = eval(root, env, value);
+    *value = eval_expr(root, env, value);
     add_variable(root, env, sym, value);
     return *value;
 }
@@ -935,7 +874,7 @@ static Obj *prim_macroexpand(void *root, Obj **env, Obj **list) {
 static Obj *prim_println(void *root, Obj **env, Obj **list) {
     DEFINE1(tmp);
     *tmp = (*list)->car;
-    print(eval(root, env, tmp));
+    print(eval_expr(root, env, tmp));
     printf("\n");
     return Nil;
 }
@@ -946,10 +885,10 @@ static Obj *prim_if(void *root, Obj **env, Obj **list) {
         error("Malformed if");
     DEFINE3(cond, then, els);
     *cond = (*list)->car;
-    *cond = eval(root, env, cond);
+    *cond = eval_expr(root, env, cond);
     if (*cond != Nil) {
         *then = (*list)->cdr->car;
-        return eval(root, env, then);
+        return eval_expr(root, env, then);
     }
     *els = (*list)->cdr->cdr;
     return *els == Nil ? Nil : progn(root, env, els);
@@ -1021,7 +960,7 @@ static bool getEnvFlag(char *name) {
     return val && val[0];
 }
 
-int main(int argc, char **argv) {
+void init(void **root, Obj **env) {
     // Debug flags
     debug_gc = getEnvFlag("MINILISP_DEBUG_GC");
     always_gc = getEnvFlag("MINILISP_ALWAYS_GC");
@@ -1031,22 +970,24 @@ int main(int argc, char **argv) {
 
     // Constants and primitives
     Symbols = Nil;
+
+    *env = make_env(*root, &Nil, &Nil);
+    define_constants(*root, env);
+    define_primitives(*root, env);
+}
+
+#ifndef LIBRARY
+int main(int argc, char **argv) {
     void *root = NULL;
     DEFINE2(env, expr);
-    *env = make_env(root, &Nil, &Nil);
-    define_constants(root, env);
-    define_primitives(root, env);
-
+    init(&root, env);
     // The main loop
     for (;;) {
-        *expr = read_expr(root);
-        if (!*expr)
+        Obj* result= read_eval_expr(root, env, expr);
+        if (!result)
             return 0;
-        if (*expr == Cparen)
-            error("Stray close parenthesis");
-        if (*expr == Dot)
-            error("Stray dot");
-        print(eval(root, env, expr));
+        print(result);
         printf("\n");
     }
 }
+#endif

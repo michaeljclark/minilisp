@@ -404,11 +404,45 @@ static Obj *acons(void *root, Obj **x, Obj **y, Obj **a) {
 #define SYMBOL_MAX_LEN 200
 const char symbol_chars[] = "~!@#$%^&*-_=+:/?<>";
 
-static Obj *read_expr(void *root);
+Obj *read_expr(void *root);
+
+static char *ibuf;
+static size_t ioff;
+static size_t ilen;
+
+void buffer_expr(const char *str, size_t length)
+{
+    if (ibuf) free(ibuf);
+    ioff = 0;
+    ilen = length;
+    ibuf = malloc(length + 1);
+    memcpy(ibuf, str, length);
+    ibuf[length] = '\0';
+}
+
+static int ml_getc()
+{
+    if (ibuf == NULL) {
+        return getc(stdin);
+    } else if (ioff < ilen) {
+        return ibuf[ioff++];
+    } else {
+        return EOF;
+    }
+}
+
+static void ml_ungetc(int c)
+{
+    if (ibuf == NULL) {
+        ungetc(c, stdin);
+    } else if (ioff > 0) {
+        ibuf[--ioff] = c;
+    }
+}
 
 static int peek(void) {
-    int c = getchar();
-    ungetc(c, stdin);
+    int c = ml_getc();
+    ml_ungetc(c);
     return c;
 }
 
@@ -427,12 +461,12 @@ static Obj *reverse(Obj *p) {
 // Skips the input until newline is found. Newline is one of \r, \r\n or \n.
 static void skip_line(void) {
     for (;;) {
-        int c = getchar();
+        int c = ml_getc();
         if (c == EOF || c == '\n')
             return;
         if (c == '\r') {
             if (peek() == '\n')
-                getchar();
+                ml_getc();
             return;
         }
     }
@@ -487,7 +521,7 @@ static Obj *read_quote(void *root) {
 
 static int read_number(int val) {
     while (isdigit(peek()))
-        val = val * 10 + (getchar() - '0');
+        val = val * 10 + (ml_getc() - '0');
     return val;
 }
 
@@ -498,15 +532,15 @@ static Obj *read_symbol(void *root, char c) {
     while (isalnum(peek()) || strchr(symbol_chars, peek())) {
         if (SYMBOL_MAX_LEN <= len)
             error("Symbol name too long");
-        buf[len++] = getchar();
+        buf[len++] = ml_getc();
     }
     buf[len] = '\0';
     return intern(root, buf);
 }
 
-static Obj *read_expr(void *root) {
+Obj *read_expr(void *root) {
     for (;;) {
-        int c = getchar();
+        int c = ml_getc();
         if (c == ' ' || c == '\n' || c == '\r' || c == '\t')
             continue;
         if (c == EOF)
